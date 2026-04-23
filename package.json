@@ -96,11 +96,11 @@
       "required": false
     },
     {
-      "name": "finishedAfterHours",
+      "name": "finishedAfterMinutes",
       "type": "textfield",
-      "title": "Mark Finished After (hours)",
-      "description": "Idle sessions older than this many hours are shown as Finished instead of Waiting for input. Set to 0 to disable.",
-      "default": "6",
+      "title": "Mark Finished After (minutes)",
+      "description": "Idle sessions older than this many minutes are shown as Finished instead of Waiting for input. Set to 0 to disable.",
+      "default": "30",
       "required": false
     },
     {

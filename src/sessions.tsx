@@ -26,7 +26,7 @@ import { TerminalApp } from "./lib/handoff"
 interface Preferences {
   handoffMethod: "terminal" | "desktop"
   terminalApp: TerminalApp
-  finishedAfterHours?: string
+  finishedAfterMinutes?: string
   serverUrl?: string
   serverUsername?: string
   serverPassword?: string
@@ -36,7 +36,7 @@ type DerivedStatus = "in_progress" | "blocked" | "waiting_for_turn" | "finished"
 
 const POLL_MS = 1_500
 const LIST_RELOAD_MS = 10_000
-const DEFAULT_FINISHED_AFTER_HOURS = 6
+const DEFAULT_FINISHED_AFTER_MINUTES = 30
 
 const STATUS_META: Record<DerivedStatus, { icon: { source: Icon; tintColor: Color }; label: string }> = {
   in_progress: {
@@ -57,10 +57,10 @@ const STATUS_META: Record<DerivedStatus, { icon: { source: Icon; tintColor: Colo
   },
 }
 
-function parseHours(value: string | undefined): number {
-  if (value === undefined || value === null || value.trim() === "") return DEFAULT_FINISHED_AFTER_HOURS
+function parseMinutes(value: string | undefined): number {
+  if (value === undefined || value === null || value.trim() === "") return DEFAULT_FINISHED_AFTER_MINUTES
   const n = Number(value)
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_FINISHED_AFTER_HOURS
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_FINISHED_AFTER_MINUTES
   return n
 }
 
@@ -295,7 +295,7 @@ export default function Command() {
     return date.toLocaleDateString()
   }
 
-  const finishedAfterMs = useMemo(() => parseHours(preferences.finishedAfterHours) * 3_600_000, [preferences.finishedAfterHours])
+  const finishedAfterMs = useMemo(() => parseMinutes(preferences.finishedAfterMinutes) * 60_000, [preferences.finishedAfterMinutes])
 
   const liveCorrelation = useMemo(
     () =>
