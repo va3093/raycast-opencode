@@ -83,14 +83,22 @@ async function toolCall<T>(prompt: string, system: string, tool: AnthropicTool):
   return null
 }
 
-export async function renameSession(transcript: string): Promise<RenameResult | null> {
+export async function renameSession(
+  userPrompts: string,
+  currentTitle?: string
+): Promise<RenameResult | null> {
+  const titleHint = currentTitle
+    ? `\n\nThe current title is "${currentTitle}". Keep it unchanged if it still fits the session's overall intent; only change the title if the user's goals have meaningfully shifted.`
+    : ""
   const result = await toolCall<RenameResult>(
-    `Below is the start of an opencode coding-assistant session. Pick a title and a short description.
+    `Below is the ordered list of every user prompt in an opencode coding-assistant session, numbered in chronological order. The first prompts usually state the core intent; later prompts are follow-ups, clarifications, or pivots.
 
-<transcript>
-${transcript}
-</transcript>`,
-    "You name programming chat sessions. Titles must be short, specific and free of filler words like 'Help with' or 'How to'.",
+Pick a title that captures what the *overall session* is about, weighting the earliest prompts most heavily. Do NOT let the most recent prompt dominate — follow-up tweaks should not overwrite the core topic.${titleHint}
+
+<user_prompts>
+${userPrompts}
+</user_prompts>`,
+    "You name programming chat sessions. Titles must be short, specific and free of filler words like 'Help with' or 'How to'. Anchor on the session's overall intent, not the latest micro-task.",
     RENAME_TOOL
   )
   if (!result) return null

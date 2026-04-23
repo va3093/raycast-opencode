@@ -75,6 +75,39 @@ async function buildTranscript(client: PluginInput["client"], sessionID: string,
     .slice(0, 12_000)
 }
 
+/**
+ * Build a rename prompt from all user messages in chronological order.
+ * If the combined text is longer than MAX chars, keep the first ~8k (the
+ * original intent) and the last ~4k (recent pivots) joined by a gap
+ * marker. This avoids over-weighting the latest turn.
+ */
+async function buildUserPromptTranscript(
+  client: PluginInput["client"],
+  sessionID: string
+): Promise<string> {
+  // No sensible cap: fetch the whole history. opencode's /message endpoint
+  // returns in chronological order; passing a huge limit is fine because
+  // the server streams rows from the DB.
+  const messages = await fetchMessages(client, sessionID, 10_000)
+  const blocks = messages
+    .filter(({ info }) => info.role === "user")
+    .map(({ parts }, i) => {
+      const text = partsToText(parts)
+      return text ? `[${i + 1}] ${text}` : ""
+    })
+    .filter(Boolean)
+
+  if (blocks.length === 0) return ""
+
+  const combined = blocks.join("\n\n")
+  const MAX = 12_000
+  if (combined.length <= MAX) return combined
+
+  const HEAD = 8_000
+  const TAIL = 4_000
+  return combined.slice(0, HEAD) + "\n\n…[older turns omitted]…\n\n" + combined.slice(combined.length - TAIL)
+}
+
 async function attemptCorrelation(session: Session, attempt = 0): Promise<void> {
   const match = await correlateGhostty({
     sessionId: session.id,
@@ -113,9 +146,11 @@ async function runRename(
 ): Promise<void> {
   if (!isHaikuConfigured()) return
   try {
-    const transcript = await buildTranscript(client, sessionID, 6)
+    const transcript = await buildUserPromptTranscript(client, sessionID)
     if (!transcript) return
-    const result = await renameSession(transcript)
+    const state = await readState()
+    const currentTitle = state.sessions[sessionID]?.generatedTitle ?? undefined
+    const result = await renameSession(transcript, currentTitle)
     if (!result) return
 
     await upsertSession(sessionID, {
