@@ -18,7 +18,7 @@ import { handoffToOpenCode, copySessionCommand } from "./lib/handoff"
 import { useSessionSearch } from "./hooks/useSessionSearch"
 import { homedir } from "os"
 import { readSessionState, type TrackedSession } from "./lib/session-state"
-import { focusGhosttyWindow, listGhosttyTerminalIds } from "./lib/ghostty"
+import { focusGhosttyWindow, listGhosttyTerminals, correlateSessions, type GhosttyTerminal } from "./lib/ghostty"
 
 import { TerminalApp } from "./lib/handoff"
 
@@ -62,13 +62,13 @@ function parseHours(value: string | undefined): number {
 interface LiveState {
   sessionStatus: Record<string, SessionRunStatus>
   blockedSessionIDs: Set<string>
-  openGhosttyTerminalIDs: Set<string>
+  openGhosttyTerminals: GhosttyTerminal[]
 }
 
 const EMPTY_LIVE: LiveState = {
   sessionStatus: {},
   blockedSessionIDs: new Set(),
-  openGhosttyTerminalIDs: new Set(),
+  openGhosttyTerminals: [],
 }
 
 function deriveStatus(
@@ -121,18 +121,18 @@ export default function Command() {
   async function refreshLive() {
     try {
       const client = await getClient()
-      const [sessionStatus, permissions, questions, openGhosttyTerminalIDs] = await Promise.all([
+      const [sessionStatus, permissions, questions, openGhosttyTerminals] = await Promise.all([
         client.getSessionStatusMap().catch(() => ({}) as Record<string, SessionRunStatus>),
         client.listPermissions(),
         client.listQuestions(),
-        listGhosttyTerminalIds(),
+        listGhosttyTerminals(),
       ])
 
       const blockedSessionIDs = new Set<string>()
       for (const p of permissions) blockedSessionIDs.add(p.sessionID)
       for (const q of questions) blockedSessionIDs.add(q.sessionID)
 
-      setLive({ sessionStatus, blockedSessionIDs, openGhosttyTerminalIDs })
+      setLive({ sessionStatus, blockedSessionIDs, openGhosttyTerminals })
     } catch {
       /* best effort */
     }
@@ -173,9 +173,12 @@ export default function Command() {
     }
   }
 
-  async function handleFocusGhostty(session: Session, tracked: TrackedSession | undefined) {
+  async function handleFocusGhostty(session: Session, tracked: TrackedSession | undefined, liveTerminalId?: string) {
     const title = tracked?.generatedTitle ?? session.title
-    const ok = await focusGhosttyWindow(tracked?.ghostty ?? null, title)
+    const correlation = liveTerminalId
+      ? { terminalId: liveTerminalId, correlatedAt: Date.now() }
+      : (tracked?.ghostty ?? null)
+    const ok = await focusGhosttyWindow(correlation, title)
     if (ok) {
       await showHUD("Focused Ghostty window")
       return
@@ -212,6 +215,20 @@ export default function Command() {
 
   const finishedAfterMs = useMemo(() => parseHours(preferences.finishedAfterHours) * 3_600_000, [preferences.finishedAfterHours])
 
+  const liveCorrelation = useMemo(
+    () =>
+      correlateSessions(
+        sessions.map((s) => ({ id: s.id, title: s.title, directory: s.directory })),
+        live.openGhosttyTerminals,
+      ),
+    [sessions, live.openGhosttyTerminals],
+  )
+
+  const openTerminalIds = useMemo(
+    () => new Set(live.openGhosttyTerminals.map((t) => t.terminalId)),
+    [live.openGhosttyTerminals],
+  )
+
   const rows = useMemo(() => {
     const now = Date.now()
     return filteredSessions.map((session) => ({
@@ -243,9 +260,10 @@ export default function Command() {
           const directory = session.directory?.replace(homedir(), "~") ?? ""
           const subtitle = description || directory
           const icon = meta.icon
-          const hasOpenTerminal = Boolean(
-            tracked?.ghostty?.terminalId && live.openGhosttyTerminalIDs.has(tracked.ghostty.terminalId),
-          )
+          const liveTerminalId = liveCorrelation.get(session.id)
+          const sidecarTerminalId = tracked?.ghostty?.terminalId
+          const openTerminalId = liveTerminalId ?? (sidecarTerminalId && openTerminalIds.has(sidecarTerminalId) ? sidecarTerminalId : undefined)
+          const hasOpenTerminal = Boolean(openTerminalId)
           const accessories: List.Item.Accessory[] = []
           // When we have a description, surface the directory as an accessory
           // so both are visible simultaneously.
@@ -275,7 +293,7 @@ export default function Command() {
                     <Action
                       title="Focus Ghostty Window"
                       icon={Icon.Window}
-                      onAction={() => handleFocusGhostty(session, tracked)}
+                      onAction={() => handleFocusGhostty(session, tracked, openTerminalId)}
                     />
                     <Action
                       title="Continue in Terminal"
