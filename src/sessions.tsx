@@ -87,10 +87,13 @@ function deriveStatus(
   finishedAfterMs: number,
   now: number,
 ): DerivedStatus {
+  // Blocked (waiting on user question/permission) wins over generic
+  // streaming — if the probe marked the session blocked, the last tool
+  // part is a running `question`, which means the model is paused.
+  if (live.blockedSessionIDs.has(session.id)) return "blocked"
   const runStatus = live.sessionStatus[session.id]
   if (runStatus && runStatus.type !== "idle") return "in_progress"
   if (live.streamingSessionIDs.has(session.id)) return "in_progress"
-  if (live.blockedSessionIDs.has(session.id)) return "blocked"
   if (finishedAfterMs > 0 && now - session.time.updated >= finishedAfterMs) return "finished"
   return "waiting_for_turn"
 }
@@ -152,9 +155,10 @@ export default function Command() {
 
       // The serving opencode process only knows about its own in-memory busy
       // state. Sessions driven by a different opencode instance (e.g. an
-      // `opencode --continue` CLI in a terminal) look idle via /session/status.
-      // Probe recently-active sessions for a trailing assistant message
-      // whose time.completed is null — that's an active stream.
+      // `opencode --continue` CLI in a terminal) look idle via /session/status
+      // AND don't register in /permission or /question (those services are
+      // per-process, in-memory). Probe recently-active sessions for the
+      // trailing assistant message to classify them precisely.
       const now = Date.now()
       const recencyThresholdMs = 5 * 60 * 1000
       const toProbe = lastLoadedSessionsRef.current
@@ -168,9 +172,24 @@ export default function Command() {
             const msgs = await client.getSessionMessages(s.id, 3, null)
             const last = msgs[msgs.length - 1]
             if (!last) return
-            const role = last.info.role
+            if (last.info.role !== "assistant") return
             const completed = (last.info as { time?: { completed?: number | null } }).time?.completed
-            if (role === "assistant" && (completed === null || completed === undefined)) {
+            if (completed !== null && completed !== undefined) return
+
+            // Assistant message is mid-stream. Check if it's blocked on a
+            // user-interactive tool (question) — tool part with state.status
+            // === "running" AND tool name === "question" means the model is
+            // waiting on the user, not actively generating.
+            const blockedByQuestion = last.parts.some((p) => {
+              if (p.type !== "tool") return false
+              if ((p as { tool?: string }).tool !== "question") return false
+              const state = (p as { state?: { status?: string } }).state
+              return state?.status === "running" || state?.status === "pending"
+            })
+
+            if (blockedByQuestion) {
+              blockedSessionIDs.add(s.id)
+            } else {
               streamingSessionIDs.add(s.id)
             }
           } catch {
