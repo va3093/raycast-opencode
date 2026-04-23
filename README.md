@@ -6,6 +6,7 @@ A Raycast extension for [OpenCode](https://opencode.ai) - AI coding assistant wi
 
 - **Ask OpenCode** - Quick coding questions directly from Raycast with streaming responses
 - **Full-Text Session Search** - Search across session titles, directories, and message content using FlexSearch
+- **Live session state + Ghostty correlation** - Companion opencode plugin writes a state file with per-session status (in progress / waiting for input / finished), auto-renames sessions via Haiku, and tracks the matching Ghostty terminal window. See [`opencode-plugin/README.md`](./opencode-plugin/README.md).
 - **Multi-Terminal Support** - Open sessions in Ghostty, iTerm, Warp, Kitty, Alacritty, Hyper, or Terminal.app
 - **@path Context** - Use `@~/path/to/project` to specify working directory with autocomplete
 - **Model Selector** - Switch between providers and models on the fly
@@ -32,11 +33,24 @@ A Raycast extension for [OpenCode](https://opencode.ai) - AI coding assistant wi
 Install from Raycast Store, or build from source:
 
 ```bash
-git clone https://github.com/dpshade22/raycast-opencode.git
+git clone https://github.com/va3093/raycast-opencode.git
 cd raycast-opencode
 bun install
 bun run dev
 ```
+
+### Install the companion OpenCode plugin
+
+The extension reads live session state from `~/.local/state/opencode-raycast/sessions.json`. An OpenCode plugin in [`opencode-plugin/`](./opencode-plugin) writes that file and performs Ghostty correlation and Haiku-powered renaming.
+
+```bash
+cd opencode-plugin
+bun install && bun run build
+mkdir -p ~/.config/opencode/plugins
+ln -sf "$(pwd)/dist/index.js" ~/.config/opencode/plugins/opencode-raycast-state.js
+```
+
+Set `ANTHROPIC_API_KEY` in your opencode server environment to enable the Haiku rename + summary flow.
 
 ## Usage
 
@@ -52,7 +66,11 @@ bun run dev
 
 1. Open Raycast and search for "Recent Sessions"
 2. Type to search across session titles and message content
-3. Press Enter to open a session in your configured terminal
+3. Titles are prefixed with a status dot when the companion plugin is installed:
+   - 🟢 In progress
+   - 🟡 Waiting for your input
+   - ⚪ Finished
+4. Press Enter to focus the associated Ghostty window. Falls back to the handoff method if no Ghostty window is correlated.
 
 ### Keyboard Shortcuts
 
@@ -102,7 +120,7 @@ Open Raycast Preferences > Extensions > OpenCode:
 ```
 src/
   ask.tsx              # Main "Ask OpenCode" command
-  sessions.tsx         # Session browser with full-text search
+  sessions.tsx         # Session browser with full-text search + state indicators
   projects.tsx         # Project picker
   hooks/
     useOpenCode.ts     # OpenCode API client hook
@@ -113,7 +131,16 @@ src/
   lib/
     opencode.ts        # OpenCode HTTP client
     handoff.ts         # Terminal app launchers
+    ghostty.ts         # AppleScript focus of a correlated Ghostty terminal
+    session-state.ts   # Reader for the plugin's state file
     server-manager.ts  # Auto-start server logic
+opencode-plugin/       # Companion OpenCode plugin (state file + Haiku + Ghostty correlation)
+  src/
+    index.ts           # Plugin entry (event handlers)
+    state.ts           # Atomic read/write of sessions.json
+    ghostty.ts         # AppleScript correlation by OC |-prefixed title + dir
+    haiku.ts           # Anthropic Haiku rename + summary
+    types.ts           # Shared types
 ```
 
 ## Session Search
