@@ -16,6 +16,10 @@ export interface Session {
   directory: string
   title: string
   version: string
+  /** Non-null when this session was spawned as a sub-agent (task/general/
+   * explore) by another session. We filter these out of the top-level
+   * list since they are not meant to be resumed on their own. */
+  parentID?: string | null
   time: {
     created: number
     updated: number
@@ -172,6 +176,11 @@ class OpenCodeClient {
     for (const r of results) {
       if (r.status !== "fulfilled") continue
       for (const s of r.value) {
+        // Skip sub-agent sessions (spawned by task/general/explore
+        // agents). They share the same storage as their parent but
+        // aren't meant to be resumed on their own, so they just
+        // clutter the list.
+        if (s.parentID) continue
         const existing = byID.get(s.id)
         if (!existing || s.time.updated > existing.time.updated) byID.set(s.id, s)
       }
