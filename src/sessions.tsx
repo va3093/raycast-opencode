@@ -176,9 +176,9 @@ export default function Command() {
     await showToast({
       style: Toast.Style.Animated,
       title: "Ghostty window not found",
-      message: "Falling back to opening a new session",
+      message: "Opening a new Ghostty window for this session",
     })
-    await handoffToOpenCode(session.id, preferences.handoffMethod, session.directory, preferences.terminalApp)
+    await handoffToOpenCode(session.id, "terminal", session.directory, "ghostty")
   }
 
   async function handleHandoff(session: Session) {
