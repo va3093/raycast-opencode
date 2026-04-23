@@ -18,7 +18,7 @@ import { handoffToOpenCode, copySessionCommand } from "./lib/handoff"
 import { useSessionSearch } from "./hooks/useSessionSearch"
 import { homedir } from "os"
 import { readSessionState, type TrackedSession } from "./lib/session-state"
-import { focusGhosttyWindow } from "./lib/ghostty"
+import { focusGhosttyWindow, listGhosttyTerminalIds } from "./lib/ghostty"
 
 import { TerminalApp } from "./lib/handoff"
 
@@ -58,11 +58,13 @@ function parseHours(value: string | undefined): number {
 interface LiveState {
   sessionStatus: Record<string, SessionRunStatus>
   blockedSessionIDs: Set<string>
+  openGhosttyTerminalIDs: Set<string>
 }
 
 const EMPTY_LIVE: LiveState = {
   sessionStatus: {},
   blockedSessionIDs: new Set(),
+  openGhosttyTerminalIDs: new Set(),
 }
 
 function deriveStatus(
@@ -115,17 +117,18 @@ export default function Command() {
   async function refreshLive() {
     try {
       const client = await getClient()
-      const [sessionStatus, permissions, questions] = await Promise.all([
+      const [sessionStatus, permissions, questions, openGhosttyTerminalIDs] = await Promise.all([
         client.getSessionStatusMap().catch(() => ({}) as Record<string, SessionRunStatus>),
         client.listPermissions(),
         client.listQuestions(),
+        listGhosttyTerminalIds(),
       ])
 
       const blockedSessionIDs = new Set<string>()
       for (const p of permissions) blockedSessionIDs.add(p.sessionID)
       for (const q of questions) blockedSessionIDs.add(q.sessionID)
 
-      setLive({ sessionStatus, blockedSessionIDs })
+      setLive({ sessionStatus, blockedSessionIDs, openGhosttyTerminalIDs })
     } catch {
       /* best effort */
     }
@@ -244,8 +247,14 @@ export default function Command() {
           }
           accessories.push({ tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" })
           accessories.push({ text: formatDate(session.time.updated), tooltip: "Last updated" })
-          if (tracked?.ghostty?.terminalId) {
-            accessories.push({ icon: Icon.Window, tooltip: `Ghostty terminal ${tracked.ghostty.terminalId.slice(0, 8)}` })
+          const hasOpenTerminal = Boolean(
+            tracked?.ghostty?.terminalId && live.openGhosttyTerminalIDs.has(tracked.ghostty.terminalId),
+          )
+          if (hasOpenTerminal) {
+            accessories.push({
+              icon: { source: Icon.Window, tintColor: Color.SecondaryText },
+              tooltip: "Open in a Ghostty window",
+            })
           }
           if (session.share) accessories.push({ icon: Icon.Link, tooltip: "Shared" })
 

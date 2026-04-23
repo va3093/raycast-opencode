@@ -62,6 +62,30 @@ end tell`
   }
 }
 
+const LIST_IDS_SCRIPT = `tell application "Ghostty"
+  set out to ""
+  repeat with t in terminals
+    try
+      set out to out & (id of t) & linefeed
+    end try
+  end repeat
+  return out
+end tell`
+
+export async function listGhosttyTerminalIds(): Promise<Set<string>> {
+  try {
+    const out = await runOsascript(LIST_IDS_SCRIPT)
+    return new Set(
+      out
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    )
+  } catch {
+    return new Set()
+  }
+}
+
 export async function focusGhosttyWindow(
   correlation: GhosttyCorrelation | null,
   sessionTitle: string,
