@@ -62,12 +62,17 @@ function parseHours(value: string | undefined): number {
 interface LiveState {
   sessionStatus: Record<string, SessionRunStatus>
   blockedSessionIDs: Set<string>
+  /** Session IDs whose most recent assistant message has no time.completed,
+   * which we treat as "actively streaming" regardless of which opencode
+   * process is driving the session. */
+  streamingSessionIDs: Set<string>
   openGhosttyTerminals: GhosttyTerminal[]
 }
 
 const EMPTY_LIVE: LiveState = {
   sessionStatus: {},
   blockedSessionIDs: new Set(),
+  streamingSessionIDs: new Set(),
   openGhosttyTerminals: [],
 }
 
@@ -79,6 +84,7 @@ function deriveStatus(
 ): DerivedStatus {
   const runStatus = live.sessionStatus[session.id]
   if (runStatus && runStatus.type !== "idle") return "in_progress"
+  if (live.streamingSessionIDs.has(session.id)) return "in_progress"
   if (live.blockedSessionIDs.has(session.id)) return "blocked"
   if (finishedAfterMs > 0 && now - session.time.updated >= finishedAfterMs) return "finished"
   return "waiting_for_turn"
@@ -118,6 +124,11 @@ export default function Command() {
     setTrackedById(state.sessions)
   }
 
+  const lastLoadedSessionsRef = useRef<Session[]>([])
+  useEffect(() => {
+    lastLoadedSessionsRef.current = sessions
+  }, [sessions])
+
   async function refreshLive() {
     try {
       const client = await getClient()
@@ -132,7 +143,36 @@ export default function Command() {
       for (const p of permissions) blockedSessionIDs.add(p.sessionID)
       for (const q of questions) blockedSessionIDs.add(q.sessionID)
 
-      setLive({ sessionStatus, blockedSessionIDs, openGhosttyTerminals })
+      // The serving opencode process only knows about its own in-memory busy
+      // state. Sessions driven by a different opencode instance (e.g. an
+      // `opencode --continue` CLI in a terminal) look idle via /session/status.
+      // Probe recently-active sessions for a trailing assistant message
+      // whose time.completed is null — that's an active stream.
+      const now = Date.now()
+      const recencyThresholdMs = 5 * 60 * 1000
+      const toProbe = lastLoadedSessionsRef.current
+        .filter((s) => now - s.time.updated < recencyThresholdMs)
+        .slice(0, 20)
+
+      const streamingSessionIDs = new Set<string>()
+      await Promise.all(
+        toProbe.map(async (s) => {
+          try {
+            const msgs = await client.getSessionMessages(s.id, 3, null)
+            const last = msgs[msgs.length - 1]
+            if (!last) return
+            const role = last.info.role
+            const completed = (last.info as { time?: { completed?: number | null } }).time?.completed
+            if (role === "assistant" && (completed === null || completed === undefined)) {
+              streamingSessionIDs.add(s.id)
+            }
+          } catch {
+            /* best effort */
+          }
+        }),
+      )
+
+      setLive({ sessionStatus, blockedSessionIDs, streamingSessionIDs, openGhosttyTerminals })
     } catch {
       /* best effort */
     }

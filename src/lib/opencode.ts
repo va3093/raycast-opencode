@@ -49,6 +49,10 @@ export interface Message {
     id: string
     sessionID: string
     role: "user" | "assistant"
+    time?: {
+      created?: number
+      completed?: number | null
+    }
   }
   parts: MessagePart[]
 }
@@ -187,10 +191,14 @@ class OpenCodeClient {
     return this.request<boolean>("DELETE", `/session/${sessionId}`)
   }
 
-  async getSessionMessages(sessionId: string, limit?: number): Promise<Message[]> {
-    return this.request<Message[]>("GET", `/session/${sessionId}/message`, undefined, {
-      limit: limit?.toString(),
-    })
+  async getSessionMessages(sessionId: string, limit?: number, directory?: string | null): Promise<Message[]> {
+    return this.request<Message[]>(
+      "GET",
+      `/session/${sessionId}/message`,
+      undefined,
+      { limit: limit?.toString() },
+      directory !== undefined ? { directory } : undefined,
+    )
   }
 
   async sendPrompt(
