@@ -28,7 +28,7 @@ interface Preferences {
   finishedAfterHours?: string
 }
 
-type DerivedStatus = "in_progress" | "waiting_for_input" | "finished"
+type DerivedStatus = "in_progress" | "blocked" | "waiting_for_turn" | "finished"
 
 const POLL_MS = 1_500
 const DEFAULT_FINISHED_AFTER_HOURS = 6
@@ -38,9 +38,13 @@ const STATUS_META: Record<DerivedStatus, { icon: { source: Icon; tintColor: Colo
     icon: { source: Icon.CircleFilled, tintColor: Color.Green },
     label: "In progress",
   },
-  waiting_for_input: {
+  blocked: {
+    icon: { source: Icon.CircleFilled, tintColor: Color.Orange },
+    label: "Needs response",
+  },
+  waiting_for_turn: {
     icon: { source: Icon.CircleFilled, tintColor: Color.Yellow },
-    label: "Waiting for input",
+    label: "Your turn",
   },
   finished: {
     icon: { source: Icon.CircleFilled, tintColor: Color.SecondaryText },
@@ -71,13 +75,13 @@ function deriveStatus(
   session: Session,
   live: LiveState,
   finishedAfterMs: number,
-  now: number
+  now: number,
 ): DerivedStatus {
   const runStatus = live.sessionStatus[session.id]
   if (runStatus && runStatus.type !== "idle") return "in_progress"
-  if (live.blockedSessionIDs.has(session.id)) return "waiting_for_input"
+  if (live.blockedSessionIDs.has(session.id)) return "blocked"
   if (finishedAfterMs > 0 && now - session.time.updated >= finishedAfterMs) return "finished"
-  return "waiting_for_input"
+  return "waiting_for_turn"
 }
 
 export default function Command() {
@@ -239,23 +243,23 @@ export default function Command() {
           const directory = session.directory?.replace(homedir(), "~") ?? ""
           const subtitle = description || directory
           const icon = meta.icon
+          const hasOpenTerminal = Boolean(
+            tracked?.ghostty?.terminalId && live.openGhosttyTerminalIDs.has(tracked.ghostty.terminalId),
+          )
           const accessories: List.Item.Accessory[] = []
           // When we have a description, surface the directory as an accessory
           // so both are visible simultaneously.
           if (description && directory) {
             accessories.push({ text: directory, tooltip: "Working directory" })
           }
-          accessories.push({ tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" })
-          accessories.push({ text: formatDate(session.time.updated), tooltip: "Last updated" })
-          const hasOpenTerminal = Boolean(
-            tracked?.ghostty?.terminalId && live.openGhosttyTerminalIDs.has(tracked.ghostty.terminalId),
-          )
           if (hasOpenTerminal) {
             accessories.push({
-              icon: { source: Icon.Window, tintColor: Color.SecondaryText },
+              icon: { source: Icon.Terminal, tintColor: Color.Blue },
               tooltip: "Open in a Ghostty window",
             })
           }
+          accessories.push({ tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" })
+          accessories.push({ text: formatDate(session.time.updated), tooltip: "Last updated" })
           if (session.share) accessories.push({ icon: Icon.Link, tooltip: "Shared" })
 
           return (
