@@ -13,7 +13,8 @@ import {
   showHUD,
 } from "@raycast/api"
 import { useState, useEffect, useMemo, useRef } from "react"
-import { getClient, Session, type SessionRunStatus } from "./lib/opencode"
+import { getClient, resetClient, Session, type SessionRunStatus } from "./lib/opencode"
+import { clearCachedServer } from "./lib/server-manager"
 import { handoffToOpenCode, copySessionCommand } from "./lib/handoff"
 import { useSessionSearch } from "./hooks/useSessionSearch"
 import { homedir } from "os"
@@ -26,6 +27,9 @@ interface Preferences {
   handoffMethod: "terminal" | "desktop"
   terminalApp: TerminalApp
   finishedAfterHours?: string
+  serverUrl?: string
+  serverUsername?: string
+  serverPassword?: string
 }
 
 type DerivedStatus = "in_progress" | "blocked" | "waiting_for_turn" | "finished"
@@ -291,10 +295,15 @@ export default function Command() {
     }))
   }, [filteredSessions, trackedById, live, finishedAfterMs])
 
+  const navTitle = searchText
+    ? `${rows.length} of ${sessions.length}`
+    : `${sessions.length} sessions`
+
   return (
     <List
       isLoading={isLoading || isIndexing}
       searchBarPlaceholder="Search sessions..."
+      navigationTitle={navTitle}
       filtering={false}
       onSearchTextChange={setSearchText}
       searchText={searchText}
@@ -370,6 +379,16 @@ export default function Command() {
                         void loadSessions()
                         void refreshTracked()
                         void refreshLive()
+                      }}
+                    />
+                    <Action
+                      title="Reset Server Cache"
+                      icon={Icon.Plug}
+                      onAction={async () => {
+                        await clearCachedServer()
+                        resetClient()
+                        await showToast({ style: Toast.Style.Success, title: "Server cache cleared" })
+                        void loadSessions()
                       }}
                     />
                     <Action

@@ -8,7 +8,10 @@ import path from "path"
 const execAsync = promisify(exec)
 
 const STORAGE_KEY_PORT = "opencode-server-port"
-const DEFAULT_PORT = 4096
+// Probed in order when no explicit Server URL is configured and the cached
+// port is unreachable. Includes the raycast-opencode auto-spawn range end
+// (4096), the LaunchAgent at 8765, and the legacy auto-spawn range start.
+const DEFAULT_PORTS = [4096, 8765, 19000]
 const PORT_RANGE_START = 19000
 const PORT_RANGE_END = 19999
 
@@ -171,15 +174,17 @@ export async function ensureServer(opts: EnsureServerOptions = {}): Promise<Serv
     }
   }
 
-  // 2. Check default port (in case user started server manually)
-  const defaultResult = await isServerHealthy(`http://localhost:${DEFAULT_PORT}`, authHeader)
-  if (defaultResult.healthy) {
-    await LocalStorage.setItem(STORAGE_KEY_PORT, DEFAULT_PORT)
-    return {
-      url: `http://localhost:${DEFAULT_PORT}`,
-      port: DEFAULT_PORT,
-      version: defaultResult.version,
-      authHeader,
+  // 2. Probe known default ports (user started server manually / LaunchAgent)
+  for (const port of DEFAULT_PORTS) {
+    const result = await isServerHealthy(`http://localhost:${port}`, authHeader)
+    if (result.healthy) {
+      await LocalStorage.setItem(STORAGE_KEY_PORT, port)
+      return {
+        url: `http://localhost:${port}`,
+        port,
+        version: result.version,
+        authHeader,
+      }
     }
   }
 
@@ -222,12 +227,21 @@ export async function getServerUrl(): Promise<string | null> {
     }
   }
 
-  const defaultResult = await isServerHealthy(`http://localhost:${DEFAULT_PORT}`)
-  if (defaultResult.healthy) {
-    return `http://localhost:${DEFAULT_PORT}`
+  for (const port of DEFAULT_PORTS) {
+    const result = await isServerHealthy(`http://localhost:${port}`)
+    if (result.healthy) {
+      return `http://localhost:${port}`
+    }
   }
 
   return null
+}
+
+/**
+ * Clear the cached server port. Next ensureServer() call will re-probe.
+ */
+export async function clearCachedServer(): Promise<void> {
+  await LocalStorage.removeItem(STORAGE_KEY_PORT)
 }
 
 // Custom error classes
