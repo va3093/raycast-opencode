@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.va3093.raycast-opencode</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/va3093/.nvm/versions/node/v24.14.0/bin/node</string>
+        <string>/Users/va3093/code/personal/raycast-opencode/node_modules/@raycast/api/bin/run.js</string>
+        <string>develop</string>
+        <string>--non-interactive</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/va3093/code/personal/raycast-opencode</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/va3093</string>
+        <key>PATH</key>
+        <string>/Users/va3093/.nvm/versions/node/v24.14.0/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>NODE_ENV</key>
+        <string>development</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/va3093/Library/Logs/raycast-opencode/develop.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/va3093/Library/Logs/raycast-opencode/develop.error.log</string>
+</dict>
+</plist>

@@ -39,6 +39,20 @@ bun install
 bun run dev
 ```
 
+### Keep the extension running (optional LaunchAgent)
+
+Raycast only shows locally-built extensions while `ray develop` is running. To keep it always on, install the bundled LaunchAgent:
+
+```bash
+mkdir -p ~/Library/Logs/raycast-opencode
+cp launchagents/com.va3093.raycast-opencode.plist ~/Library/LaunchAgents/
+uid=$(id -u)
+launchctl bootstrap gui/$uid ~/Library/LaunchAgents/com.va3093.raycast-opencode.plist
+launchctl kickstart -k gui/$uid/com.va3093.raycast-opencode
+```
+
+See [`launchagents/README.md`](./launchagents/README.md) for details and customisation.
+
 ### Install the companion OpenCode plugin
 
 The extension reads live session state from `~/.local/state/opencode-raycast/sessions.json`. An OpenCode plugin in [`opencode-plugin/`](./opencode-plugin) writes that file and performs Ghostty correlation and Haiku-powered renaming.
