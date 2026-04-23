@@ -1,0 +1,35 @@
+{
+  "name": "opencode-raycast-state",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that tracks session state for the raycast-opencode extension (Ghostty correlation + Haiku rename/summary)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir dist --target bun --external @opencode-ai/plugin --external @anthropic-ai/sdk && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "dev": "bun build ./src/index.ts --outdir dist --target bun --watch --external @opencode-ai/plugin --external @anthropic-ai/sdk"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.21",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.2"
+  }
+}
