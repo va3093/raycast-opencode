@@ -53,21 +53,16 @@ const TERMINAL_CONFIGS: Record<TerminalApp, TerminalConfig> = {
   ghostty: {
     name: "Ghostty",
     openCommand: (dir, cmd) => {
-      const fullCmd = `cd "${dir}" && ${cmd}`
-      return `bash -c 'echo "${fullCmd.replace(/"/g, '\\"')}" | pbcopy && osascript -e "
-        tell application \\"Ghostty\\" to activate
-        delay 0.3
-        repeat until application \\"Ghostty\\" is frontmost
-          delay 0.1
-        end repeat
-        tell application \\"System Events\\"
-          keystroke \\"t\\" using command down
-          delay 0.3
-          keystroke \\"v\\" using command down
-          delay 0.1
-          key code 36
-        end tell
-      "'`
+      // Use Ghostty's native `open -na` path: it spawns a fresh window
+      // with the working directory preset and runs the initial command
+      // directly (no keystroke choreography, no AppleScript frontmost
+      // polling — both of those hung when Raycast held focus).
+      // --wait-after-command=true keeps the surface alive after opencode
+      // exits so the user drops back into a shell rather than the
+      // window vanishing.
+      const escDir = dir.replace(/"/g, '\\"')
+      const escCmd = cmd.replace(/"/g, '\\"')
+      return `open -na "Ghostty.app" --args --working-directory="${escDir}" --wait-after-command=true --initial-command="${escCmd}"`
     },
   },
   iterm: {
