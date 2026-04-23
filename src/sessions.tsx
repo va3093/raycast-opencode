@@ -31,6 +31,7 @@ interface Preferences {
 type DerivedStatus = "in_progress" | "blocked" | "waiting_for_turn" | "finished"
 
 const POLL_MS = 1_500
+const LIST_RELOAD_MS = 10_000
 const DEFAULT_FINISHED_AFTER_HOURS = 6
 
 const STATUS_META: Record<DerivedStatus, { icon: { source: Icon; tintColor: Color }; label: string }> = {
@@ -100,20 +101,22 @@ export default function Command() {
 
   const { searchText, setSearchText, filteredSessions, isIndexing } = useSessionSearch(sessions)
 
-  async function loadSessions() {
-    setIsLoading(true)
+  async function loadSessions(opts: { silent?: boolean } = {}) {
+    if (!opts.silent) setIsLoading(true)
     try {
       const client = await getClient()
       const sessionList = await client.listAllSessions()
       setSessions(sessionList.sort((a, b) => b.time.updated - a.time.updated))
     } catch (error) {
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Failed to load sessions",
-        message: error instanceof Error ? error.message : "Unknown error",
-      })
+      if (!opts.silent) {
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Failed to load sessions",
+          message: error instanceof Error ? error.message : "Unknown error",
+        })
+      }
     } finally {
-      setIsLoading(false)
+      if (!opts.silent) setIsLoading(false)
     }
   }
 
@@ -185,11 +188,21 @@ export default function Command() {
 
   useEffect(() => {
     void refreshLive()
-    const id = setInterval(() => {
+    const liveId = setInterval(() => {
       void refreshTracked()
       void refreshLive()
     }, POLL_MS)
-    return () => clearInterval(id)
+    // Reload the session list in the background on a slower cadence so
+    // newly-created sessions (including ones in sandboxes that were
+    // registered after the command opened) appear without requiring a
+    // manual Cmd+R refresh.
+    const listId = setInterval(() => {
+      void loadSessions({ silent: true })
+    }, LIST_RELOAD_MS)
+    return () => {
+      clearInterval(liveId)
+      clearInterval(listId)
+    }
   }, [])
 
   async function handleDelete(session: Session) {
