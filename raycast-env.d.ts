@@ -20,8 +20,8 @@ type ExtensionPreferences = {
   "serverPassword": string,
   /** Auto-start Server - Automatically start OpenCode server if no configured server and no default port server is reachable. */
   "autoStartServer": boolean,
-  /** Mark Finished After (hours) - Idle sessions older than this many hours are shown as Finished instead of Waiting for input. Set to 0 to disable. */
-  "finishedAfterHours": string,
+  /** Mark Finished After (minutes) - Idle sessions older than this many minutes are shown as Finished instead of Waiting for input. Set to 0 to disable. */
+  "finishedAfterMinutes": string,
   /** Terminal Application - Which terminal to use when opening sessions */
   "terminalApp": "default" | "ghostty" | "iterm" | "warp" | "alacritty" | "kitty" | "terminal" | "hyper"
 }

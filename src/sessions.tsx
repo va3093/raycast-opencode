@@ -20,6 +20,7 @@ import { useSessionSearch } from "./hooks/useSessionSearch"
 import { homedir } from "os"
 import { readSessionState, type TrackedSession } from "./lib/session-state"
 import { focusGhosttyWindow, listGhosttyTerminals, correlateSessions, type GhosttyTerminal } from "./lib/ghostty"
+import { getCachedRepoName, getRepoName } from "./lib/repo-name"
 
 import { TerminalApp } from "./lib/handoff"
 
@@ -104,9 +105,26 @@ export default function Command() {
   const [trackedById, setTrackedById] = useState<Record<string, TrackedSession>>({})
   const [live, setLive] = useState<LiveState>(EMPTY_LIVE)
   const [isLoading, setIsLoading] = useState(true)
+  const [isShowingDetail, setIsShowingDetail] = useState(false)
+  const [repoNames, setRepoNames] = useState<Record<string, string>>({})
   const lastStateUpdatedAt = useRef<number>(0)
 
   const { searchText, setSearchText, filteredSessions, isIndexing } = useSessionSearch(sessions)
+
+  async function resolveRepoNames(sessionList: Session[]) {
+    const dirs = new Set<string>()
+    for (const s of sessionList) {
+      if (s.directory) dirs.add(s.directory)
+    }
+    const entries = await Promise.all(
+      Array.from(dirs).map(async (dir) => [dir, await getRepoName(dir)] as const),
+    )
+    setRepoNames((prev) => {
+      const next = { ...prev }
+      for (const [dir, name] of entries) next[dir] = name
+      return next
+    })
+  }
 
   async function loadSessions(opts: { silent?: boolean } = {}) {
     if (!opts.silent) setIsLoading(true)
@@ -114,6 +132,7 @@ export default function Command() {
       const client = await getClient()
       const sessionList = await client.listAllSessions()
       setSessions(sessionList.sort((a, b) => b.time.updated - a.time.updated))
+      void resolveRepoNames(sessionList)
     } catch (error) {
       if (!opts.silent) {
         await showToast({
@@ -332,6 +351,7 @@ export default function Command() {
       filtering={false}
       onSearchTextChange={setSearchText}
       searchText={searchText}
+      isShowingDetail={isShowingDetail}
     >
       {rows.length === 0 && !isLoading ? (
         <List.EmptyView
@@ -344,36 +364,66 @@ export default function Command() {
           const meta = STATUS_META[status]
           const title = session.title || tracked?.originalTitle || "Untitled Session"
           const description = tracked?.description?.trim() ?? ""
-          const directory = session.directory?.replace(homedir(), "~") ?? ""
-          const subtitle = description || directory
+          const directory = session.directory ?? ""
+          const fallbackDir = directory.replace(homedir(), "~")
+          const repoName = repoNames[directory] ?? getCachedRepoName(directory)
           const icon = meta.icon
           const liveTerminalId = liveCorrelation.get(session.id)
           const sidecarTerminalId = tracked?.ghostty?.terminalId
           const openTerminalId = liveTerminalId ?? (sidecarTerminalId && openTerminalIds.has(sidecarTerminalId) ? sidecarTerminalId : undefined)
           const hasOpenTerminal = Boolean(openTerminalId)
+
+          // When detail panel is showing, keep the row compact: icon +
+          // title + status tag + date only. Description and working
+          // directory live in the right-side detail pane. When detail
+          // is hidden, surface repo + status + date on the row.
           const accessories: List.Item.Accessory[] = []
-          // When we have a description, surface the directory as an accessory
-          // so both are visible simultaneously.
-          if (description && directory) {
-            accessories.push({ text: directory, tooltip: "Working directory" })
+          if (!isShowingDetail) {
+            if (repoName) {
+              accessories.push({ text: repoName, tooltip: fallbackDir || undefined })
+            }
+            if (hasOpenTerminal) {
+              accessories.push({
+                icon: { source: Icon.Terminal, tintColor: Color.Blue },
+                tooltip: "Open in a Ghostty window",
+              })
+            }
+            accessories.push({ tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" })
+            accessories.push({ text: formatDate(session.time.updated), tooltip: "Last updated" })
+            if (session.share) accessories.push({ icon: Icon.Link, tooltip: "Shared" })
+          } else {
+            accessories.push({ tag: { value: meta.label, color: meta.icon.tintColor } })
           }
-          if (hasOpenTerminal) {
-            accessories.push({
-              icon: { source: Icon.Terminal, tintColor: Color.Blue },
-              tooltip: "Open in a Ghostty window",
-            })
-          }
-          accessories.push({ tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" })
-          accessories.push({ text: formatDate(session.time.updated), tooltip: "Last updated" })
-          if (session.share) accessories.push({ icon: Icon.Link, tooltip: "Shared" })
+
+          const detailMarkdown = [
+            description ? description : "_No description yet._",
+          ].join("\n\n")
 
           return (
             <List.Item
               key={session.id}
               title={title}
-              subtitle={subtitle}
               icon={icon}
               accessories={accessories}
+              detail={
+                <List.Item.Detail
+                  markdown={detailMarkdown}
+                  metadata={
+                    <List.Item.Detail.Metadata>
+                      <List.Item.Detail.Metadata.Label title="Status" text={meta.label} />
+                      <List.Item.Detail.Metadata.Label title="Repo" text={repoName || "—"} />
+                      <List.Item.Detail.Metadata.Label title="Directory" text={fallbackDir || "—"} />
+                      <List.Item.Detail.Metadata.Label title="Updated" text={new Date(session.time.updated).toLocaleString()} />
+                      {tracked?.originalTitle && tracked.originalTitle !== title ? (
+                        <List.Item.Detail.Metadata.Label title="Original title" text={tracked.originalTitle} />
+                      ) : null}
+                      {hasOpenTerminal ? (
+                        <List.Item.Detail.Metadata.Label title="Ghostty" text="Open window correlated" />
+                      ) : null}
+                    </List.Item.Detail.Metadata>
+                  }
+                />
+              }
               actions={
                 <ActionPanel>
                   <ActionPanel.Section title="Open">
@@ -393,6 +443,14 @@ export default function Command() {
                       icon={Icon.Clipboard}
                       shortcut={Keyboard.Shortcut.Common.Copy}
                       onAction={() => handleCopyCommand(session)}
+                    />
+                  </ActionPanel.Section>
+                  <ActionPanel.Section title="View">
+                    <Action
+                      title={isShowingDetail ? "Hide Details" : "Show Details"}
+                      icon={isShowingDetail ? Icon.Sidebar : Icon.AppWindowSidebarRight}
+                      shortcut={{ modifiers: ["cmd"], key: "d" }}
+                      onAction={() => setIsShowingDetail((v) => !v)}
                     />
                   </ActionPanel.Section>
                   <ActionPanel.Section title="Manage">
