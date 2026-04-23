@@ -5,7 +5,6 @@ const execAsync = promisify(exec)
 
 export interface GhosttyTerminal {
   terminalId: string
-  windowId: string | null
   name: string
   workingDirectory: string
 }
@@ -16,7 +15,6 @@ const TITLE_PREFIX = "OC | "
 
 const LIST_SCRIPT = `tell application "Ghostty"
   set out to ""
-  set winIds to {}
   set termList to every terminal
   repeat with t in termList
     try
@@ -34,51 +32,14 @@ const LIST_SCRIPT = `tell application "Ghostty"
     on error
       set tdir to ""
     end try
-    try
-      set wid to id of window of tab 1 whose focused terminal is t
-    on error
-      set wid to ""
-    end try
-    set out to out & tid & "${DELIM}" & tname & "${DELIM}" & tdir & "${DELIM}" & wid & "${ROW_DELIM}"
+    set out to out & tid & "${DELIM}" & tname & "${DELIM}" & tdir & "${ROW_DELIM}"
   end repeat
   return out
 end tell`
 
-const SIMPLE_LIST_SCRIPT = `tell application "Ghostty"
-  set out to ""
-  set termList to every terminal
-  repeat with t in termList
-    try
-      set tid to id of t
-    on error
-      set tid to ""
-    end try
-    try
-      set tname to name of t
-    on error
-      set tname to ""
-    end try
-    try
-      set tdir to working directory of t
-    on error
-      set tdir to ""
-    end try
-    set out to out & tid & "${DELIM}" & tname & "${DELIM}" & tdir & "${DELIM}${ROW_DELIM}"
-  end repeat
-  return out
-end tell`
-
-const WINDOW_MAP_SCRIPT = `tell application "Ghostty"
-  set out to ""
-  repeat with w in windows
-    try
-      set wid to id of w
-      set wname to name of w
-      set out to out & wid & "${DELIM}" & wname & "${ROW_DELIM}"
-    end try
-  end repeat
-  return out
-end tell`
+function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`
+}
 
 async function runOsascript(script: string): Promise<string> {
   const { stdout } = await execAsync(`osascript -e ${shellEscape(script)}`, {
@@ -88,11 +49,7 @@ async function runOsascript(script: string): Promise<string> {
   return stdout
 }
 
-function shellEscape(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`
-}
-
-function parseSimpleTerminals(raw: string): GhosttyTerminal[] {
+function parseTerminals(raw: string): GhosttyTerminal[] {
   return raw
     .split(ROW_DELIM)
     .map((row) => row.trim())
@@ -103,43 +60,14 @@ function parseSimpleTerminals(raw: string): GhosttyTerminal[] {
         terminalId: (cols[0] ?? "").trim(),
         name: (cols[1] ?? "").trim(),
         workingDirectory: (cols[2] ?? "").trim(),
-        windowId: null,
       }
     })
     .filter((t) => t.terminalId.length > 0)
 }
 
-function parseWindowMap(raw: string): Map<string, string> {
-  const map = new Map<string, string>()
-  raw
-    .split(ROW_DELIM)
-    .map((row) => row.trim())
-    .filter((row) => row.length > 0)
-    .forEach((row) => {
-      const [wid, name] = row.split(DELIM)
-      if (wid && name !== undefined) map.set(name.trim(), wid.trim())
-    })
-  return map
-}
-
 export async function listGhosttyTerminals(): Promise<GhosttyTerminal[]> {
   try {
-    const raw = await runOsascript(SIMPLE_LIST_SCRIPT)
-    const terms = parseSimpleTerminals(raw)
-    if (terms.length === 0) return []
-
-    try {
-      const winRaw = await runOsascript(WINDOW_MAP_SCRIPT)
-      const byName = parseWindowMap(winRaw)
-      for (const t of terms) {
-        const wid = byName.get(t.name)
-        if (wid) t.windowId = wid
-      }
-    } catch {
-      /* best-effort */
-    }
-
-    return terms
+    return parseTerminals(await runOsascript(LIST_SCRIPT))
   } catch {
     return []
   }
@@ -156,7 +84,12 @@ function stripPrefix(name: string): string {
 }
 
 function normalise(s: string): string {
-  return s.toLowerCase().replace(/…$/u, "").replace(/\.{3}$/u, "").replace(/[^a-z0-9]+/g, " ").trim()
+  return s
+    .toLowerCase()
+    .replace(/…$/u, "")
+    .replace(/\.{3}$/u, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
 }
 
 function titleMatches(terminalName: string, sessionTitle: string): boolean {
@@ -164,7 +97,6 @@ function titleMatches(terminalName: string, sessionTitle: string): boolean {
   const st = normalise(sessionTitle)
   if (!tn || !st) return false
   if (tn === st) return true
-  // Ghostty truncates long titles with "..." — allow prefix match in either direction
   const short = tn.length < st.length ? tn : st
   const long = tn.length < st.length ? st : tn
   return short.length >= 8 && long.startsWith(short)
@@ -179,8 +111,7 @@ export async function correlateGhostty(opts: CorrelationOptions): Promise<Ghostt
   const byTitleAndDir = prefixed.filter(
     (t) => titleMatches(t.name, opts.title) && t.workingDirectory === opts.directory
   )
-  if (byTitleAndDir.length === 1) return byTitleAndDir[0]
-  if (byTitleAndDir.length > 1) return byTitleAndDir[0]
+  if (byTitleAndDir.length >= 1) return byTitleAndDir[0]
 
   const byTitle = prefixed.filter((t) => titleMatches(t.name, opts.title))
   if (byTitle.length === 1) return byTitle[0]

@@ -24,10 +24,7 @@ export async function readState(): Promise<StateFile> {
       return emptyState()
     }
     return parsed
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return emptyState()
-    }
+  } catch {
     return emptyState()
   }
 }
@@ -60,25 +57,20 @@ export function upsertSession(id: string, patch: Partial<TrackedSession>): Promi
         ...patch,
         id,
         ghostty: patch.ghostty !== undefined ? patch.ghostty : existing.ghostty,
-        times: {
-          ...existing.times,
-          ...(patch.times ?? {}),
-        },
+        times: { ...existing.times, ...(patch.times ?? {}), updated: now },
       }
     } else {
       state.sessions[id] = {
         id,
         directory: patch.directory ?? "",
-        originalTitle: patch.originalTitle ?? patch.title ?? "",
-        title: patch.title ?? patch.originalTitle ?? "",
+        originalTitle: patch.originalTitle ?? "",
+        generatedTitle: patch.generatedTitle ?? null,
         description: patch.description ?? "",
-        status: patch.status ?? "in_progress",
-        lastRole: patch.lastRole ?? null,
+        lastRenamedUserMessageID: patch.lastRenamedUserMessageID ?? null,
         ghostty: patch.ghostty ?? null,
         times: {
           created: patch.times?.created ?? now,
-          lastMessage: patch.times?.lastMessage ?? now,
-          lastStatusChange: patch.times?.lastStatusChange ?? now,
+          updated: now,
         },
       }
     }

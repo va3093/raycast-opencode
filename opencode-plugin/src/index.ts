@@ -1,13 +1,30 @@
+import { appendFileSync, mkdirSync } from "node:fs"
+import { homedir } from "node:os"
+import path from "node:path"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import type { Message, Part, Session } from "@opencode-ai/sdk"
 import { correlateGhostty } from "./ghostty.js"
 import { isHaikuConfigured, renameSession, summariseSession } from "./haiku.js"
 import { getStatePath, mutateState, readState, removeSession, upsertSession } from "./state.js"
-import type { MessageRole, TrackedSession } from "./types.js"
 
 const RENAME_DEBOUNCE_MS = 1_500
 const CORRELATE_RETRY_MS = 2_000
 const MAX_CORRELATE_RETRIES = 5
+
+const DEBUG_LOG_PATH = path.join(homedir(), ".local", "state", "opencode-raycast", "plugin-debug.log")
+try {
+  mkdirSync(path.dirname(DEBUG_LOG_PATH), { recursive: true })
+} catch {
+  /* ignore */
+}
+function debugLog(msg: string, extra?: unknown): void {
+  try {
+    const line = `[${new Date().toISOString()}] ${msg}${extra !== undefined ? " " + JSON.stringify(extra) : ""}\n`
+    appendFileSync(DEBUG_LOG_PATH, line)
+  } catch {
+    /* ignore */
+  }
+}
 
 const inflight = new Map<string, { renameTimer?: NodeJS.Timeout; summarising?: boolean }>()
 
@@ -24,10 +41,6 @@ function log(
     .catch(() => {})
 }
 
-function lastRoleFromMessage(info: Message): MessageRole {
-  return info.role === "user" ? "user" : "assistant"
-}
-
 function partsToText(parts: Part[]): string {
   return parts
     .filter((p) => p.type === "text")
@@ -36,22 +49,30 @@ function partsToText(parts: Part[]): string {
     .trim()
 }
 
-async function buildTranscript(client: PluginInput["client"], sessionID: string, limit: number): Promise<string> {
+async function fetchMessages(
+  client: PluginInput["client"],
+  sessionID: string,
+  limit: number
+): Promise<Array<{ info: Message; parts: Part[] }>> {
   try {
     const res = await client.session.messages({ path: { id: sessionID }, query: { limit } })
-    const messages = (res.data ?? []) as Array<{ info: Message; parts: Part[] }>
-    return messages
-      .map(({ info, parts }) => {
-        const role = info.role === "user" ? "User" : "Assistant"
-        const text = partsToText(parts)
-        return text ? `${role}: ${text}` : ""
-      })
-      .filter(Boolean)
-      .join("\n\n")
-      .slice(0, 12_000)
+    return (res.data ?? []) as Array<{ info: Message; parts: Part[] }>
   } catch {
-    return ""
+    return []
   }
+}
+
+async function buildTranscript(client: PluginInput["client"], sessionID: string, limit: number): Promise<string> {
+  const messages = await fetchMessages(client, sessionID, limit)
+  return messages
+    .map(({ info, parts }) => {
+      const role = info.role === "user" ? "User" : "Assistant"
+      const text = partsToText(parts)
+      return text ? `${role}: ${text}` : ""
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 12_000)
 }
 
 async function attemptCorrelation(session: Session, attempt = 0): Promise<void> {
@@ -63,11 +84,7 @@ async function attemptCorrelation(session: Session, attempt = 0): Promise<void> 
 
   if (match) {
     await upsertSession(session.id, {
-      ghostty: {
-        terminalId: match.terminalId,
-        windowId: match.windowId,
-        correlatedAt: Date.now(),
-      },
+      ghostty: { terminalId: match.terminalId, correlatedAt: Date.now() },
     })
     return
   }
@@ -79,17 +96,21 @@ async function attemptCorrelation(session: Session, attempt = 0): Promise<void> 
   }
 }
 
-function scheduleRename(client: PluginInput["client"], sessionID: string): void {
+function scheduleRename(client: PluginInput["client"], sessionID: string, userMessageID: string): void {
   const entry = inflight.get(sessionID) ?? {}
   if (entry.renameTimer) clearTimeout(entry.renameTimer)
   entry.renameTimer = setTimeout(() => {
     entry.renameTimer = undefined
-    void runRename(client, sessionID)
+    void runRename(client, sessionID, userMessageID)
   }, RENAME_DEBOUNCE_MS)
   inflight.set(sessionID, entry)
 }
 
-async function runRename(client: PluginInput["client"], sessionID: string): Promise<void> {
+async function runRename(
+  client: PluginInput["client"],
+  sessionID: string,
+  userMessageID: string
+): Promise<void> {
   if (!isHaikuConfigured()) return
   try {
     const transcript = await buildTranscript(client, sessionID, 6)
@@ -98,8 +119,9 @@ async function runRename(client: PluginInput["client"], sessionID: string): Prom
     if (!result) return
 
     await upsertSession(sessionID, {
-      title: result.title,
+      generatedTitle: result.title,
       description: result.description,
+      lastRenamedUserMessageID: userMessageID,
     })
 
     try {
@@ -135,15 +157,10 @@ async function runSummary(client: PluginInput["client"], sessionID: string): Pro
   }
 }
 
-function currentStateOnIdle(lastRole: MessageRole | null): TrackedSession["status"] {
-  if (lastRole === "user") return "waiting_for_input"
-  if (lastRole === "assistant") return "finished"
-  return "finished"
-}
-
 export const OpencodeRaycastStatePlugin: Plugin = async (input) => {
   const { client } = input
 
+  debugLog("plugin loaded", { statePath: getStatePath(), haiku: isHaikuConfigured() })
   log(client, "info", "plugin loaded", {
     statePath: getStatePath(),
     haiku: isHaikuConfigured(),
@@ -159,11 +176,7 @@ export const OpencodeRaycastStatePlugin: Plugin = async (input) => {
             await upsertSession(session.id, {
               directory: session.directory,
               originalTitle: session.title,
-              title: session.title,
-              description: "",
-              status: "in_progress",
-              lastRole: null,
-              times: { created: session.time.created ?? now, lastMessage: now, lastStatusChange: now },
+              times: { created: session.time.created ?? now, updated: now },
             })
             void attemptCorrelation(session)
             break
@@ -171,10 +184,7 @@ export const OpencodeRaycastStatePlugin: Plugin = async (input) => {
 
           case "session.updated": {
             const session = event.properties.info
-            await upsertSession(session.id, {
-              directory: session.directory,
-              title: session.title,
-            })
+            await upsertSession(session.id, { directory: session.directory })
             const state = await readState()
             const tracked = state.sessions[session.id]
             if (!tracked?.ghostty) void attemptCorrelation(session)
@@ -189,35 +199,29 @@ export const OpencodeRaycastStatePlugin: Plugin = async (input) => {
 
           case "message.updated": {
             const info = event.properties.info
-            const role = lastRoleFromMessage(info)
-            const now = Date.now()
-            await mutateState((state) => {
-              const tracked = state.sessions[info.sessionID]
-              if (!tracked) return
-              tracked.lastRole = role
-              tracked.status = "in_progress"
-              tracked.times.lastMessage = now
-              tracked.times.lastStatusChange = now
-            })
-            if (role === "user") scheduleRename(client, info.sessionID)
+            if (info.role !== "user") break
+            // Dedupe trailing re-emits: only schedule a rename the first time
+            // we see a given user message id for this session.
+            const state = await readState()
+            const tracked = state.sessions[info.sessionID]
+            if (tracked?.lastRenamedUserMessageID === info.id) break
+            scheduleRename(client, info.sessionID, info.id)
             break
           }
 
           case "session.idle": {
             const sessionID = event.properties.sessionID
-            const now = Date.now()
-            let didTransition = false
-            await mutateState((state) => {
-              const tracked = state.sessions[sessionID]
-              if (!tracked) return
-              const next = currentStateOnIdle(tracked.lastRole)
-              if (tracked.status !== next) {
-                tracked.status = next
-                tracked.times.lastStatusChange = now
-                didTransition = true
+            // Summarise only when the most recent real message is from the
+            // assistant (a turn genuinely completed).
+            const messages = await fetchMessages(client, sessionID, 20)
+            let lastRealRole: "user" | "assistant" | null = null
+            for (let i = messages.length - 1; i >= 0; i--) {
+              if (partsToText(messages[i].parts).length > 0) {
+                lastRealRole = messages[i].info.role === "user" ? "user" : "assistant"
+                break
               }
-            })
-            if (didTransition) void runSummary(client, sessionID)
+            }
+            if (lastRealRole === "assistant") void runSummary(client, sessionID)
             break
           }
 

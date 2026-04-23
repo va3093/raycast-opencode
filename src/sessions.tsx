@@ -13,11 +13,11 @@ import {
   showHUD,
 } from "@raycast/api"
 import { useState, useEffect, useMemo, useRef } from "react"
-import { getClient, Session } from "./lib/opencode"
+import { getClient, Session, type SessionRunStatus } from "./lib/opencode"
 import { handoffToOpenCode, copySessionCommand } from "./lib/handoff"
 import { useSessionSearch } from "./hooks/useSessionSearch"
 import { homedir } from "os"
-import { readSessionState, type TrackedSession, type SessionStatus } from "./lib/session-state"
+import { readSessionState, type TrackedSession } from "./lib/session-state"
 import { focusGhosttyWindow } from "./lib/ghostty"
 
 import { TerminalApp } from "./lib/handoff"
@@ -27,31 +27,55 @@ interface Preferences {
   terminalApp: TerminalApp
 }
 
-const STATE_POLL_INTERVAL_MS = 1_500
+type DerivedStatus = "in_progress" | "waiting_for_input" | "finished"
 
-const STATUS_META: Record<SessionStatus, { prefix: string; icon: { source: Icon; tintColor: Color }; label: string }> =
-  {
-    in_progress: {
-      prefix: "🟢 ",
-      icon: { source: Icon.CircleFilled, tintColor: Color.Green },
-      label: "In progress",
-    },
-    waiting_for_input: {
-      prefix: "🟡 ",
-      icon: { source: Icon.CircleFilled, tintColor: Color.Yellow },
-      label: "Waiting for input",
-    },
-    finished: {
-      prefix: "⚪ ",
-      icon: { source: Icon.CircleFilled, tintColor: Color.SecondaryText },
-      label: "Finished",
-    },
-  }
+const POLL_MS = 1_500
+
+const STATUS_META: Record<DerivedStatus, { prefix: string; icon: { source: Icon; tintColor: Color }; label: string }> = {
+  in_progress: {
+    prefix: "🟢 ",
+    icon: { source: Icon.CircleFilled, tintColor: Color.Green },
+    label: "In progress",
+  },
+  waiting_for_input: {
+    prefix: "🟡 ",
+    icon: { source: Icon.CircleFilled, tintColor: Color.Yellow },
+    label: "Waiting for input",
+  },
+  finished: {
+    prefix: "⚪ ",
+    icon: { source: Icon.CircleFilled, tintColor: Color.SecondaryText },
+    label: "Finished",
+  },
+}
+
+interface LiveState {
+  sessionStatus: Record<string, SessionRunStatus>
+  blockedSessionIDs: Set<string>
+  lastAssistantMsgIDBySession: Map<string, string | null>
+  lastRealRoleBySession: Map<string, "user" | "assistant" | null>
+}
+
+const EMPTY_LIVE: LiveState = {
+  sessionStatus: {},
+  blockedSessionIDs: new Set(),
+  lastAssistantMsgIDBySession: new Map(),
+  lastRealRoleBySession: new Map(),
+}
+
+function deriveStatus(sessionID: string, live: LiveState): DerivedStatus {
+  const runStatus = live.sessionStatus[sessionID]
+  if (runStatus && runStatus.type !== "idle") return "in_progress"
+  if (live.blockedSessionIDs.has(sessionID)) return "waiting_for_input"
+  if (live.lastRealRoleBySession.get(sessionID) === "assistant") return "waiting_for_input"
+  return "finished"
+}
 
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>()
   const [sessions, setSessions] = useState<Session[]>([])
   const [trackedById, setTrackedById] = useState<Record<string, TrackedSession>>({})
+  const [live, setLive] = useState<LiveState>(EMPTY_LIVE)
   const [isLoading, setIsLoading] = useState(true)
   const lastStateUpdatedAt = useRef<number>(0)
 
@@ -81,15 +105,71 @@ export default function Command() {
     setTrackedById(state.sessions)
   }
 
+  async function refreshLive(candidateSessions: Session[]) {
+    try {
+      const client = await getClient()
+      const [sessionStatus, permissions, questions] = await Promise.all([
+        client.getSessionStatusMap().catch(() => ({}) as Record<string, SessionRunStatus>),
+        client.listPermissions(),
+        client.listQuestions(),
+      ])
+
+      const blockedSessionIDs = new Set<string>()
+      for (const p of permissions) blockedSessionIDs.add(p.sessionID)
+      for (const q of questions) blockedSessionIDs.add(q.sessionID)
+
+      // Only look up recent messages for sessions that aren't busy — we only
+      // need the last-role signal to distinguish waiting_for_input vs finished.
+      const lastRealRoleBySession = new Map<string, "user" | "assistant" | null>()
+      const lastAssistantMsgIDBySession = new Map<string, string | null>()
+      const needLastRole = candidateSessions
+        .filter((s) => {
+          const st = sessionStatus[s.id]
+          return (!st || st.type === "idle") && !blockedSessionIDs.has(s.id)
+        })
+        .slice(0, 20) // cap work per poll; the rest will be refreshed on later polls
+
+      await Promise.all(
+        needLastRole.map(async (s) => {
+          try {
+            const msgs = await client.getSessionMessages(s.id, 10)
+            let lastRole: "user" | "assistant" | null = null
+            let lastAssistantId: string | null = null
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              const m = msgs[i]
+              const hasText = (m.parts ?? []).some((p) => p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0)
+              if (hasText && lastRole === null) lastRole = m.info.role
+              if (m.info.role === "assistant" && lastAssistantId === null) lastAssistantId = m.info.id
+              if (lastRole && lastAssistantId) break
+            }
+            lastRealRoleBySession.set(s.id, lastRole)
+            lastAssistantMsgIDBySession.set(s.id, lastAssistantId)
+          } catch {
+            lastRealRoleBySession.set(s.id, null)
+          }
+        })
+      )
+
+      setLive({ sessionStatus, blockedSessionIDs, lastAssistantMsgIDBySession, lastRealRoleBySession })
+    } catch {
+      /* best effort */
+    }
+  }
+
   useEffect(() => {
     loadSessions()
     void refreshTracked()
   }, [])
 
   useEffect(() => {
-    const id = setInterval(() => void refreshTracked(), STATE_POLL_INTERVAL_MS)
+    if (sessions.length === 0) return
+    void refreshLive(sessions)
+    const id = setInterval(() => {
+      void refreshTracked()
+      void refreshLive(sessions)
+    }, POLL_MS)
     return () => clearInterval(id)
-  }, [])
+  }, [sessions])
 
   async function handleDelete(session: Session) {
     const confirmed = await confirmAlert({
@@ -97,9 +177,7 @@ export default function Command() {
       message: `This will permanently delete "${session.title}"`,
       primaryAction: { title: "Delete", style: Alert.ActionStyle.Destructive },
     })
-
     if (!confirmed) return
-
     try {
       const client = await getClient()
       await client.deleteSession(session.id)
@@ -115,7 +193,7 @@ export default function Command() {
   }
 
   async function handleFocusGhostty(session: Session, tracked: TrackedSession | undefined) {
-    const title = tracked?.title ?? session.title
+    const title = tracked?.generatedTitle ?? session.title
     const ok = await focusGhosttyWindow(tracked?.ghostty ?? null, title)
     if (ok) {
       await showHUD("Focused Ghostty window")
@@ -144,7 +222,6 @@ export default function Command() {
     const diffMins = Math.floor(diffMs / 60000)
     const diffHours = Math.floor(diffMs / 3600000)
     const diffDays = Math.floor(diffMs / 86400000)
-
     if (diffMins < 1) return "Just now"
     if (diffMins < 60) return `${diffMins}m ago`
     if (diffHours < 24) return `${diffHours}h ago`
@@ -156,8 +233,9 @@ export default function Command() {
     return filteredSessions.map((session) => ({
       session,
       tracked: trackedById[session.id],
+      status: deriveStatus(session.id, live),
     }))
-  }, [filteredSessions, trackedById])
+  }, [filteredSessions, trackedById, live])
 
   return (
     <List
@@ -166,7 +244,6 @@ export default function Command() {
       filtering={false}
       onSearchTextChange={setSearchText}
       searchText={searchText}
-      isShowingDetail={false}
     >
       {rows.length === 0 && !isLoading ? (
         <List.EmptyView
@@ -175,28 +252,17 @@ export default function Command() {
           icon={Icon.Message}
         />
       ) : (
-        rows.map(({ session, tracked }) => {
-          const status = tracked?.status
-          const meta = status ? STATUS_META[status] : null
-          const title = (meta?.prefix ?? "") + (tracked?.title || session.title || "Untitled Session")
+        rows.map(({ session, tracked, status }) => {
+          const meta = STATUS_META[status]
+          const title = meta.prefix + (session.title || tracked?.originalTitle || "Untitled Session")
           const subtitle = tracked?.description?.trim() || session.directory?.replace(homedir(), "~") || ""
-          const icon = meta?.icon ?? Icon.Message
-          const accessories: List.Item.Accessory[] = []
-          if (meta) {
-            accessories.push({
-              tag: { value: meta.label, color: meta.icon.tintColor },
-              tooltip: "Session status",
-            })
-          }
-          accessories.push({
-            text: formatDate(session.time.updated),
-            tooltip: "Last updated",
-          })
+          const icon = meta.icon
+          const accessories: List.Item.Accessory[] = [
+            { tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" },
+            { text: formatDate(session.time.updated), tooltip: "Last updated" },
+          ]
           if (tracked?.ghostty?.terminalId) {
-            accessories.push({
-              icon: Icon.Window,
-              tooltip: `Ghostty terminal ${tracked.ghostty.terminalId.slice(0, 8)}`,
-            })
+            accessories.push({ icon: Icon.Window, tooltip: `Ghostty terminal ${tracked.ghostty.terminalId.slice(0, 8)}` })
           }
           if (session.share) accessories.push({ icon: Icon.Link, tooltip: "Shared" })
 
@@ -236,6 +302,7 @@ export default function Command() {
                       onAction={() => {
                         void loadSessions()
                         void refreshTracked()
+                        void refreshLive(sessions)
                       }}
                     />
                     <Action

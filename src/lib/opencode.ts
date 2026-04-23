@@ -179,9 +179,49 @@ class OpenCodeClient {
     return this.request<ProviderResponse>("GET", "/provider")
   }
 
+  async getSessionStatusMap(): Promise<Record<string, SessionRunStatus>> {
+    return this.request<Record<string, SessionRunStatus>>("GET", "/session/status")
+  }
+
+  async listPermissions(): Promise<PermissionRequest[]> {
+    try {
+      return await this.request<PermissionRequest[]>("GET", "/permission")
+    } catch {
+      return []
+    }
+  }
+
+  async listQuestions(): Promise<QuestionRequest[]> {
+    try {
+      return await this.request<QuestionRequest[]>("GET", "/question")
+    } catch {
+      return []
+    }
+  }
+
   setDirectory(directory: string): void {
     this.directory = directory
   }
+}
+
+export type SessionRunStatus =
+  | { type: "idle" }
+  | { type: "busy" }
+  | { type: "retry"; attempt: number; message: string; next: number }
+
+export interface PermissionRequest {
+  id: string
+  sessionID: string
+  type: string
+  title?: string
+  time?: { created: number }
+}
+
+export interface QuestionRequest {
+  id: string
+  sessionID: string
+  question?: string
+  time?: { created: number }
 }
 
 let clientInstance: OpenCodeClient | null = null
