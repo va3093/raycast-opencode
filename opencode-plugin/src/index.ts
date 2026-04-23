@@ -5,7 +5,15 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import type { Message, Part, Session } from "@opencode-ai/sdk"
 import { correlateGhostty } from "./ghostty.js"
 import { isHaikuConfigured, renameSession, summariseSession } from "./haiku.js"
-import { getStatePath, mutateState, readState, removeSession, upsertSession } from "./state.js"
+import {
+  clearPendingBlocker,
+  getStatePath,
+  mutateState,
+  readState,
+  removeSession,
+  setPendingBlocker,
+  upsertSession,
+} from "./state.js"
 
 const RENAME_DEBOUNCE_MS = 1_500
 const CORRELATE_RETRY_MS = 2_000
@@ -204,6 +212,47 @@ export const OpencodeRaycastStatePlugin: Plugin = async (input) => {
   return {
     event: async ({ event }) => {
       try {
+        // The SDK type union predates the permission.asked / question.asked /
+        // question.replied events emitted by the installed opencode binary.
+        // Narrow by string first so TS doesn't eliminate these branches.
+        const evt = event as { type: string; properties: Record<string, unknown> }
+        if (evt.type === "permission.asked") {
+          const props = evt.properties as { sessionID?: string; id?: string }
+          if (props.sessionID && props.id) {
+            await setPendingBlocker(props.sessionID, {
+              type: "permission",
+              requestID: props.id,
+              askedAt: Date.now(),
+            })
+          }
+          return
+        }
+        if (evt.type === "permission.replied") {
+          const props = evt.properties as { sessionID?: string; permissionID?: string; requestID?: string }
+          if (props.sessionID) {
+            await clearPendingBlocker(props.sessionID, props.requestID ?? props.permissionID ?? "")
+          }
+          return
+        }
+        if (evt.type === "question.asked") {
+          const props = evt.properties as { sessionID?: string; id?: string }
+          if (props.sessionID && props.id) {
+            await setPendingBlocker(props.sessionID, {
+              type: "question",
+              requestID: props.id,
+              askedAt: Date.now(),
+            })
+          }
+          return
+        }
+        if (evt.type === "question.replied") {
+          const props = evt.properties as { sessionID?: string; requestID?: string }
+          if (props.sessionID) {
+            await clearPendingBlocker(props.sessionID, props.requestID ?? "")
+          }
+          return
+        }
+
         switch (event.type) {
           case "session.created": {
             const session = event.properties.info
@@ -246,6 +295,12 @@ export const OpencodeRaycastStatePlugin: Plugin = async (input) => {
 
           case "session.idle": {
             const sessionID = event.properties.sessionID
+            // Safety net: if a permission/question was asked and we somehow
+            // missed the replied event, clearing on idle prevents the blocker
+            // from sticking around forever.
+            await mutateState((state) => {
+              if (state.pendingBlockers) delete state.pendingBlockers[sessionID]
+            })
             // Summarise only when the most recent real message is from the
             // assistant (a turn genuinely completed).
             const messages = await fetchMessages(client, sessionID, 20)

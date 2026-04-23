@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import { type StateFile, type TrackedSession, STATE_VERSION } from "./types.js"
+import { type PendingBlocker, type StateFile, type TrackedSession, STATE_VERSION } from "./types.js"
 
 const STATE_DIR = path.join(homedir(), ".local", "state", "opencode-raycast")
 const STATE_PATH = path.join(STATE_DIR, "sessions.json")
@@ -13,7 +13,7 @@ export function getStatePath(): string {
 }
 
 function emptyState(): StateFile {
-  return { version: STATE_VERSION, updatedAt: Date.now(), sessions: {} }
+  return { version: STATE_VERSION, updatedAt: Date.now(), sessions: {}, pendingBlockers: {} }
 }
 
 export async function readState(): Promise<StateFile> {
@@ -80,6 +80,26 @@ export function upsertSession(id: string, patch: Partial<TrackedSession>): Promi
 export function removeSession(id: string): Promise<void> {
   return mutateState((state) => {
     delete state.sessions[id]
+    if (state.pendingBlockers) delete state.pendingBlockers[id]
+  })
+}
+
+export function setPendingBlocker(sessionID: string, blocker: PendingBlocker): Promise<void> {
+  return mutateState((state) => {
+    if (!state.pendingBlockers) state.pendingBlockers = {}
+    state.pendingBlockers[sessionID] = blocker
+  })
+}
+
+export function clearPendingBlocker(sessionID: string, requestID: string): Promise<void> {
+  return mutateState((state) => {
+    if (!state.pendingBlockers) return
+    const current = state.pendingBlockers[sessionID]
+    // Only clear if the request id matches, so a late replied event
+    // for a stale request can't wipe a fresh asked event.
+    if (current && current.requestID === requestID) {
+      delete state.pendingBlockers[sessionID]
+    }
   })
 }
 

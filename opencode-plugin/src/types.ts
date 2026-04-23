@@ -21,10 +21,23 @@ export interface TrackedSession {
   }
 }
 
+export interface PendingBlocker {
+  type: "permission" | "question"
+  requestID: string
+  askedAt: number
+}
+
 export interface StateFile {
   version: 2
   updatedAt: number
   sessions: Record<string, TrackedSession>
+  /** Cross-process view of sessions currently waiting on a user response.
+   * Keyed by sessionID. Populated by the plugin in each opencode process
+   * when it sees permission.asked or question.asked on its local Bus,
+   * cleared on the matching replied event. Raycast merges this into its
+   * blocked-session set so sessions driven by other processes surface
+   * correctly. */
+  pendingBlockers?: Record<string, PendingBlocker>
 }
 
 export const STATE_VERSION = 2 as const

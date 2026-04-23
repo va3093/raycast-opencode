@@ -142,16 +142,22 @@ export default function Command() {
   async function refreshLive() {
     try {
       const client = await getClient()
-      const [sessionStatus, permissions, questions, openGhosttyTerminals] = await Promise.all([
+      const [sessionStatus, permissions, questions, openGhosttyTerminals, sidecar] = await Promise.all([
         client.getSessionStatusMap().catch(() => ({}) as Record<string, SessionRunStatus>),
         client.listPermissions(),
         client.listQuestions(),
         listGhosttyTerminals(),
+        readSessionState(),
       ])
 
       const blockedSessionIDs = new Set<string>()
       for (const p of permissions) blockedSessionIDs.add(p.sessionID)
       for (const q of questions) blockedSessionIDs.add(q.sessionID)
+      // Cross-process blockers: the plugin records permission.asked /
+      // question.asked from whichever opencode process owns the session.
+      for (const sessionID of Object.keys(sidecar.pendingBlockers ?? {})) {
+        blockedSessionIDs.add(sessionID)
+      }
 
       // The serving opencode process only knows about its own in-memory busy
       // state. Sessions driven by a different opencode instance (e.g. an
