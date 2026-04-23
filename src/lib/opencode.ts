@@ -1,10 +1,13 @@
 import { showToast, Toast, Clipboard, getPreferenceValues } from "@raycast/api"
-import { ensureServer, ServerNotRunningError, OpenCodeNotInstalledError } from "./server-manager"
+import { buildAuthHeader, ensureServer, ServerNotRunningError, OpenCodeNotInstalledError } from "./server-manager"
 
 interface Preferences {
   defaultProject?: string
   handoffMethod: "terminal" | "desktop"
   autoStartServer: boolean
+  serverUrl?: string
+  serverUsername?: string
+  serverPassword?: string
 }
 
 export interface Session {
@@ -78,22 +81,27 @@ export interface ProviderResponse {
 class OpenCodeClient {
   private baseUrl: string
   private directory?: string
+  private authHeader?: string
 
-  constructor(baseUrl: string, directory?: string) {
+  constructor(baseUrl: string, directory?: string, authHeader?: string) {
     this.baseUrl = baseUrl
     this.directory = directory
+    this.authHeader = authHeader
   }
 
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
-    queryParams?: Record<string, string | undefined>
+    queryParams?: Record<string, string | undefined>,
+    opts?: { directory?: string | null },
   ): Promise<T> {
     const url = new URL(path, this.baseUrl)
 
-    if (this.directory) {
-      url.searchParams.set("directory", this.directory)
+    // Per-request override: pass opts.directory === null to explicitly opt out.
+    const directory = opts?.directory === undefined ? this.directory : opts.directory ?? undefined
+    if (directory) {
+      url.searchParams.set("directory", directory)
     }
 
     if (queryParams) {
@@ -109,7 +117,8 @@ class OpenCodeClient {
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
-        ...(this.directory ? { "x-opencode-directory": this.directory } : {}),
+        ...(this.authHeader ? { Authorization: this.authHeader } : {}),
+        ...(directory ? { "x-opencode-directory": directory } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
     })
@@ -126,8 +135,44 @@ class OpenCodeClient {
     return this.request<HealthResponse>("GET", "/global/health")
   }
 
-  async listSessions(): Promise<Session[]> {
-    return this.request<Session[]>("GET", "/session")
+  async listSessions(directory?: string): Promise<Session[]> {
+    return this.request<Session[]>("GET", "/session", undefined, undefined, {
+      directory: directory ?? null,
+    })
+  }
+
+  async listProjects(): Promise<Project[]> {
+    return this.request<Project[]>("GET", "/project", undefined, undefined, { directory: null })
+  }
+
+  /**
+   * Fan out `GET /session?directory=<dir>` across every project worktree +
+   * its sandboxes, plus the global (no-directory) scope, and dedupe by id.
+   */
+  async listAllSessions(): Promise<Session[]> {
+    const projects = await this.listProjects().catch(() => [] as Project[])
+    const dirs = new Set<string>()
+    for (const p of projects) {
+      if (p.worktree) dirs.add(p.worktree)
+      if (Array.isArray(p.sandboxes)) {
+        for (const sb of p.sandboxes) if (sb) dirs.add(sb)
+      }
+    }
+
+    const results = await Promise.allSettled([
+      this.listSessions(),
+      ...Array.from(dirs).map((dir) => this.listSessions(dir)),
+    ])
+
+    const byID = new Map<string, Session>()
+    for (const r of results) {
+      if (r.status !== "fulfilled") continue
+      for (const s of r.value) {
+        const existing = byID.get(s.id)
+        if (!existing || s.time.updated > existing.time.updated) byID.set(s.id, s)
+      }
+    }
+    return Array.from(byID.values())
   }
 
   async createSession(title?: string): Promise<Session> {
@@ -224,6 +269,15 @@ export interface QuestionRequest {
   time?: { created: number }
 }
 
+export interface Project {
+  id: string
+  worktree: string
+  sandboxes?: string[]
+  vcs?: string
+  icon?: { color?: string }
+  time?: { created: number; updated: number }
+}
+
 let clientInstance: OpenCodeClient | null = null
 let serverUrl: string | null = null
 
@@ -231,12 +285,18 @@ export async function getClient(directory?: string): Promise<OpenCodeClient> {
   const preferences = getPreferenceValues<Preferences>()
 
   try {
-    const server = await ensureServer(preferences.autoStartServer)
+    const authHeader = buildAuthHeader(preferences.serverUsername, preferences.serverPassword)
+    const explicitUrl = preferences.serverUrl?.trim()
+    const server = await ensureServer({
+      autoStart: preferences.autoStartServer,
+      explicitUrl: explicitUrl || undefined,
+      authHeader,
+    })
     serverUrl = server.url
 
     if (!clientInstance || directory) {
       const effectiveDir = directory || preferences.defaultProject
-      clientInstance = new OpenCodeClient(server.url, effectiveDir)
+      clientInstance = new OpenCodeClient(server.url, effectiveDir, server.authHeader)
     }
 
     return clientInstance

@@ -12,28 +12,45 @@ const DEFAULT_PORT = 4096
 const PORT_RANGE_START = 19000
 const PORT_RANGE_END = 19999
 
-interface ServerInfo {
+export interface ServerInfo {
   url: string
   port: number
   version?: string
+  authHeader?: string
+}
+
+export function buildAuthHeader(username?: string, password?: string): string | undefined {
+  if (!username && !password) return undefined
+  const token = Buffer.from(`${username ?? ""}:${password ?? ""}`, "utf8").toString("base64")
+  return `Basic ${token}`
 }
 
 /**
- * Check if a server is healthy at the given URL
+ * Check if a server is healthy at the given URL.
+ * Treats HTTP 401 as "healthy but needs auth" so we don't abandon a user-configured server.
  */
-async function isServerHealthy(baseUrl: string): Promise<{ healthy: boolean; version?: string }> {
+async function isServerHealthy(
+  baseUrl: string,
+  authHeader?: string,
+): Promise<{ healthy: boolean; version?: string }> {
   try {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 2000)
 
     const response = await fetch(`${baseUrl}/global/health`, {
       signal: controller.signal,
+      headers: authHeader ? { Authorization: authHeader } : undefined,
     })
     clearTimeout(timeout)
 
     if (response.ok) {
       const data = (await response.json()) as { healthy: boolean; version: string }
       return { healthy: true, version: data.version }
+    }
+    // Reachable but unauthorized still counts as a reachable server; the
+    // caller can surface the auth error later.
+    if (response.status === 401 || response.status === 403) {
+      return { healthy: true }
     }
     return { healthy: false }
   } catch {
@@ -46,7 +63,7 @@ async function isServerHealthy(baseUrl: string): Promise<{ healthy: boolean; ver
  */
 async function findAvailablePort(start: number, end: number): Promise<number> {
   for (let port = start; port <= end; port++) {
-    const inUse = await isServerHealthy(`http://localhost:${port}`)
+    const inUse = await isServerHealthy(`http://localhost:${port}`, undefined)
     if (!inUse.healthy) {
       return port
     }
@@ -110,32 +127,59 @@ async function startServer(opencodePath: string, port: number): Promise<void> {
   throw new Error("Server failed to start within 10 seconds")
 }
 
+export interface EnsureServerOptions {
+  autoStart?: boolean
+  explicitUrl?: string
+  authHeader?: string
+}
+
+function portFromUrl(url: string): number {
+  try {
+    const u = new URL(url)
+    if (u.port) return Number(u.port)
+    return u.protocol === "https:" ? 443 : 80
+  } catch {
+    return 0
+  }
+}
+
 /**
- * Ensure OpenCode server is running, starting it if necessary
- * Returns the server URL
+ * Ensure OpenCode server is running, starting it if necessary.
+ * If explicitUrl is provided, we use it verbatim (with optional auth) and do not probe alternatives.
  */
-export async function ensureServer(autoStart: boolean = true): Promise<ServerInfo> {
+export async function ensureServer(opts: EnsureServerOptions = {}): Promise<ServerInfo> {
+  const { autoStart = true, explicitUrl, authHeader } = opts
+
+  if (explicitUrl) {
+    const trimmed = explicitUrl.replace(/\/+$/, "")
+    const result = await isServerHealthy(trimmed, authHeader)
+    if (!result.healthy) throw new ServerNotRunningError()
+    return { url: trimmed, port: portFromUrl(trimmed), version: result.version, authHeader }
+  }
+
   // 1. Check if we have a stored port from a previous session
   const storedPort = await LocalStorage.getItem<number>(STORAGE_KEY_PORT)
   if (storedPort) {
-    const result = await isServerHealthy(`http://localhost:${storedPort}`)
+    const result = await isServerHealthy(`http://localhost:${storedPort}`, authHeader)
     if (result.healthy) {
       return {
         url: `http://localhost:${storedPort}`,
         port: storedPort,
         version: result.version,
+        authHeader,
       }
     }
   }
 
   // 2. Check default port (in case user started server manually)
-  const defaultResult = await isServerHealthy(`http://localhost:${DEFAULT_PORT}`)
+  const defaultResult = await isServerHealthy(`http://localhost:${DEFAULT_PORT}`, authHeader)
   if (defaultResult.healthy) {
     await LocalStorage.setItem(STORAGE_KEY_PORT, DEFAULT_PORT)
     return {
       url: `http://localhost:${DEFAULT_PORT}`,
       port: DEFAULT_PORT,
       version: defaultResult.version,
+      authHeader,
     }
   }
 
@@ -157,11 +201,12 @@ export async function ensureServer(autoStart: boolean = true): Promise<ServerInf
   // 6. Store the port for future use
   await LocalStorage.setItem(STORAGE_KEY_PORT, port)
 
-  const result = await isServerHealthy(`http://localhost:${port}`)
+  const result = await isServerHealthy(`http://localhost:${port}`, authHeader)
   return {
     url: `http://localhost:${port}`,
     port,
     version: result.version,
+    authHeader,
   }
 }
 

@@ -12,8 +12,16 @@ type ExtensionPreferences = {
   "defaultProject"?: string,
   /** Handoff Method - How to open full sessions */
   "handoffMethod": "terminal" | "desktop",
-  /** Auto-start Server - Automatically start OpenCode server if not running */
+  /** Server URL - Explicit OpenCode server base URL, e.g. http://localhost:8765. Leave blank to auto-discover. */
+  "serverUrl": string,
+  /** Server Username - HTTP Basic auth username for the OpenCode server (optional). */
+  "serverUsername": string,
+  /** Server Password - HTTP Basic auth password for the OpenCode server (optional). */
+  "serverPassword": string,
+  /** Auto-start Server - Automatically start OpenCode server if no configured server and no default port server is reachable. */
   "autoStartServer": boolean,
+  /** Mark Finished After (hours) - Idle sessions older than this many hours are shown as Finished instead of Waiting for input. Set to 0 to disable. */
+  "finishedAfterHours": string,
   /** Terminal Application - Which terminal to use when opening sessions */
   "terminalApp": "default" | "ghostty" | "iterm" | "warp" | "alacritty" | "kitty" | "terminal" | "hyper"
 }

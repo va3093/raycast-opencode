@@ -63,10 +63,34 @@
       "required": false
     },
     {
+      "name": "serverUrl",
+      "type": "textfield",
+      "title": "Server URL",
+      "description": "Explicit OpenCode server base URL, e.g. http://localhost:8765. Leave blank to auto-discover.",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "serverUsername",
+      "type": "textfield",
+      "title": "Server Username",
+      "description": "HTTP Basic auth username for the OpenCode server (optional).",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "serverPassword",
+      "type": "password",
+      "title": "Server Password",
+      "description": "HTTP Basic auth password for the OpenCode server (optional).",
+      "default": "",
+      "required": false
+    },
+    {
       "name": "autoStartServer",
       "type": "checkbox",
       "title": "Auto-start Server",
-      "description": "Automatically start OpenCode server if not running",
+      "description": "Automatically start OpenCode server if no configured server and no default port server is reachable.",
       "default": true,
       "label": "Start server automatically",
       "required": false

@@ -94,7 +94,7 @@ export default function Command() {
     setIsLoading(true)
     try {
       const client = await getClient()
-      const sessionList = await client.listSessions()
+      const sessionList = await client.listAllSessions()
       setSessions(sessionList.sort((a, b) => b.time.updated - a.time.updated))
     } catch (error) {
       await showToast({
