@@ -232,12 +232,18 @@ export default function Command() {
         rows.map(({ session, tracked, status }) => {
           const meta = STATUS_META[status]
           const title = session.title || tracked?.originalTitle || "Untitled Session"
-          const subtitle = tracked?.description?.trim() || session.directory?.replace(homedir(), "~") || ""
+          const description = tracked?.description?.trim() ?? ""
+          const directory = session.directory?.replace(homedir(), "~") ?? ""
+          const subtitle = description || directory
           const icon = meta.icon
-          const accessories: List.Item.Accessory[] = [
-            { tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" },
-            { text: formatDate(session.time.updated), tooltip: "Last updated" },
-          ]
+          const accessories: List.Item.Accessory[] = []
+          // When we have a description, surface the directory as an accessory
+          // so both are visible simultaneously.
+          if (description && directory) {
+            accessories.push({ text: directory, tooltip: "Working directory" })
+          }
+          accessories.push({ tag: { value: meta.label, color: meta.icon.tintColor }, tooltip: "Session status" })
+          accessories.push({ text: formatDate(session.time.updated), tooltip: "Last updated" })
           if (tracked?.ghostty?.terminalId) {
             accessories.push({ icon: Icon.Window, tooltip: `Ghostty terminal ${tracked.ghostty.terminalId.slice(0, 8)}` })
           }
