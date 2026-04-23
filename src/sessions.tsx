@@ -25,50 +25,57 @@ import { TerminalApp } from "./lib/handoff"
 interface Preferences {
   handoffMethod: "terminal" | "desktop"
   terminalApp: TerminalApp
+  finishedAfterHours?: string
 }
 
 type DerivedStatus = "in_progress" | "waiting_for_input" | "finished"
 
 const POLL_MS = 1_500
+const DEFAULT_FINISHED_AFTER_HOURS = 6
 
-const STATUS_META: Record<DerivedStatus, { prefix: string; icon: { source: Icon; tintColor: Color }; label: string }> = {
+const STATUS_META: Record<DerivedStatus, { icon: { source: Icon; tintColor: Color }; label: string }> = {
   in_progress: {
-    prefix: "🟢 ",
     icon: { source: Icon.CircleFilled, tintColor: Color.Green },
     label: "In progress",
   },
   waiting_for_input: {
-    prefix: "🟡 ",
     icon: { source: Icon.CircleFilled, tintColor: Color.Yellow },
     label: "Waiting for input",
   },
   finished: {
-    prefix: "⚪ ",
     icon: { source: Icon.CircleFilled, tintColor: Color.SecondaryText },
     label: "Finished",
   },
 }
 
+function parseHours(value: string | undefined): number {
+  if (value === undefined || value === null || value.trim() === "") return DEFAULT_FINISHED_AFTER_HOURS
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_FINISHED_AFTER_HOURS
+  return n
+}
+
 interface LiveState {
   sessionStatus: Record<string, SessionRunStatus>
   blockedSessionIDs: Set<string>
-  lastAssistantMsgIDBySession: Map<string, string | null>
-  lastRealRoleBySession: Map<string, "user" | "assistant" | null>
 }
 
 const EMPTY_LIVE: LiveState = {
   sessionStatus: {},
   blockedSessionIDs: new Set(),
-  lastAssistantMsgIDBySession: new Map(),
-  lastRealRoleBySession: new Map(),
 }
 
-function deriveStatus(sessionID: string, live: LiveState): DerivedStatus {
-  const runStatus = live.sessionStatus[sessionID]
+function deriveStatus(
+  session: Session,
+  live: LiveState,
+  finishedAfterMs: number,
+  now: number
+): DerivedStatus {
+  const runStatus = live.sessionStatus[session.id]
   if (runStatus && runStatus.type !== "idle") return "in_progress"
-  if (live.blockedSessionIDs.has(sessionID)) return "waiting_for_input"
-  if (live.lastRealRoleBySession.get(sessionID) === "assistant") return "waiting_for_input"
-  return "finished"
+  if (live.blockedSessionIDs.has(session.id)) return "waiting_for_input"
+  if (finishedAfterMs > 0 && now - session.time.updated >= finishedAfterMs) return "finished"
+  return "waiting_for_input"
 }
 
 export default function Command() {
@@ -105,7 +112,7 @@ export default function Command() {
     setTrackedById(state.sessions)
   }
 
-  async function refreshLive(candidateSessions: Session[]) {
+  async function refreshLive() {
     try {
       const client = await getClient()
       const [sessionStatus, permissions, questions] = await Promise.all([
@@ -118,39 +125,7 @@ export default function Command() {
       for (const p of permissions) blockedSessionIDs.add(p.sessionID)
       for (const q of questions) blockedSessionIDs.add(q.sessionID)
 
-      // Only look up recent messages for sessions that aren't busy — we only
-      // need the last-role signal to distinguish waiting_for_input vs finished.
-      const lastRealRoleBySession = new Map<string, "user" | "assistant" | null>()
-      const lastAssistantMsgIDBySession = new Map<string, string | null>()
-      const needLastRole = candidateSessions
-        .filter((s) => {
-          const st = sessionStatus[s.id]
-          return (!st || st.type === "idle") && !blockedSessionIDs.has(s.id)
-        })
-        .slice(0, 20) // cap work per poll; the rest will be refreshed on later polls
-
-      await Promise.all(
-        needLastRole.map(async (s) => {
-          try {
-            const msgs = await client.getSessionMessages(s.id, 10)
-            let lastRole: "user" | "assistant" | null = null
-            let lastAssistantId: string | null = null
-            for (let i = msgs.length - 1; i >= 0; i--) {
-              const m = msgs[i]
-              const hasText = (m.parts ?? []).some((p) => p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0)
-              if (hasText && lastRole === null) lastRole = m.info.role
-              if (m.info.role === "assistant" && lastAssistantId === null) lastAssistantId = m.info.id
-              if (lastRole && lastAssistantId) break
-            }
-            lastRealRoleBySession.set(s.id, lastRole)
-            lastAssistantMsgIDBySession.set(s.id, lastAssistantId)
-          } catch {
-            lastRealRoleBySession.set(s.id, null)
-          }
-        })
-      )
-
-      setLive({ sessionStatus, blockedSessionIDs, lastAssistantMsgIDBySession, lastRealRoleBySession })
+      setLive({ sessionStatus, blockedSessionIDs })
     } catch {
       /* best effort */
     }
@@ -162,14 +137,13 @@ export default function Command() {
   }, [])
 
   useEffect(() => {
-    if (sessions.length === 0) return
-    void refreshLive(sessions)
+    void refreshLive()
     const id = setInterval(() => {
       void refreshTracked()
-      void refreshLive(sessions)
+      void refreshLive()
     }, POLL_MS)
     return () => clearInterval(id)
-  }, [sessions])
+  }, [])
 
   async function handleDelete(session: Session) {
     const confirmed = await confirmAlert({
@@ -229,13 +203,16 @@ export default function Command() {
     return date.toLocaleDateString()
   }
 
+  const finishedAfterMs = useMemo(() => parseHours(preferences.finishedAfterHours) * 3_600_000, [preferences.finishedAfterHours])
+
   const rows = useMemo(() => {
+    const now = Date.now()
     return filteredSessions.map((session) => ({
       session,
       tracked: trackedById[session.id],
-      status: deriveStatus(session.id, live),
+      status: deriveStatus(session, live, finishedAfterMs, now),
     }))
-  }, [filteredSessions, trackedById, live])
+  }, [filteredSessions, trackedById, live, finishedAfterMs])
 
   return (
     <List
@@ -254,7 +231,7 @@ export default function Command() {
       ) : (
         rows.map(({ session, tracked, status }) => {
           const meta = STATUS_META[status]
-          const title = meta.prefix + (session.title || tracked?.originalTitle || "Untitled Session")
+          const title = session.title || tracked?.originalTitle || "Untitled Session"
           const subtitle = tracked?.description?.trim() || session.directory?.replace(homedir(), "~") || ""
           const icon = meta.icon
           const accessories: List.Item.Accessory[] = [
@@ -302,7 +279,7 @@ export default function Command() {
                       onAction={() => {
                         void loadSessions()
                         void refreshTracked()
-                        void refreshLive(sessions)
+                        void refreshLive()
                       }}
                     />
                     <Action
